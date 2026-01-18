@@ -5,6 +5,25 @@ Have you ever found yourself living in a 1950's-era house with unbalanced non-ad
 
 <img src="breadbooster.jpeg" alt="BreadBooster" width="800" />
 
+## Design Flaw
+
+Through my testing, I found that the main microcontroller is unable to turn the fans *off*. Each fan is driven by a PNP transistor with the following connections:
+
+* The emitter is connected to 12 V.
+* The base is connected to GPIO through a 2 kOhm resistor.
+* The collector is connected to the fan.
+
+My original plan was to control the transistor by switching the GPIO between these two states:
+
+* GPIO output driven low
+* GPIO input with internal pull-up resistor disabled
+
+I reasoned that this should work, because the transistor will only be enabled if current flows from the emitter to the base. Normally a GPIO input with internal pull-up resistor disabled behaves as an open circuit. However, the microcontroller has internal protection diodes which allow current to pass when voltage is outside the range of GND to VCC. As a result, about 3 mA flows even when the GPIO is configured as an input. This causes the transistor to be enabled, and the fans run when I don't want them to.
+
+I feel embarrassed to have made this mistake, but at least I learned a lesson: Do NOT use GPIO to control current through a resistor to voltage above VCC! Current will flow even if the GPIO is an input!
+
+As it stands, **the current BreadBooster design does not work, so do not build it yourself!** I'm only leaving this repo to document the work I did before I found the design flaw. The design could be salvaged by adding an additional NPN transistor before each PNP transistor, but I'm not going to do that right now...
+
 ## Parts List
 
 BreadBooster uses the PCB design file "BreadBooster after ground plane.pcb" in the "pcbFiles" directory of this repo. I used the service https://www.pad2pad.com to print the PCB. I cut the PCB into a "main board" and "satellite board". The satellite board measures radiator temperature and sends the measurements over a cable to the main board. The main board then decides whether to turn the fans on or off.
@@ -78,9 +97,5 @@ Satellite microcontroller pinout:
 * Pin 6 = PB1 = Satellite data
 * Pin 7 = PB2 = MCU SCK
 * Pin 8 = VCC
-
-## Firmware Installation
-
-TODO: Write this section.
 
 

@@ -2,12 +2,17 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <avr/io.h>
+#include <avr/interrupt.h>
 #include <avr/pgmspace.h>
 #include <util/delay.h>
 
 #define NULL ((void *)0)
 #define true 1
 #define false 0
+
+#define PREV_BUTTON 1
+#define NEXT_BUTTON 2
+#define ENTER_BUTTON 3
 
 #define sleepMilliseconds(milliseconds) _delay_ms(milliseconds)
 #define sleepMicroseconds(microseconds) _delay_us(microseconds)
@@ -39,6 +44,57 @@
 #define satelliteDataPinInput() DDRD &= ~(1 << DDD4)
 #define satelliteDataPinRead() (PIND & (1 << PIND4))
 
+#define button1PinInput() DDRD &= ~(1 << DDD5)
+#define button1PinRead() (PIND & (1 << PIND5))
+
+#define button2PinInput() DDRD &= ~(1 << DDD6)
+#define button2PinRead() (PIND & (1 << PIND6))
+
+#define button3PinInput() DDRD &= ~(1 << DDD7)
+#define button3PinRead() (PIND & (1 << PIND7))
+
+#define fan1ControlPinOutput() DDRC |= (1 << DDC5)
+#define fan1ControlPinInput() DDRC &= ~(1 << DDC5)
+#define fan1ControlPinLow() PORTC &= ~(1 << PORTC5)
+
+#define fan2ControlPinOutput() DDRC |= (1 << DDC4)
+#define fan2ControlPinInput() DDRC &= ~(1 << DDC4)
+#define fan2ControlPinLow() PORTC &= ~(1 << PORTC4)
+
+#define fan3ControlPinOutput() DDRC |= (1 << DDC3)
+#define fan3ControlPinInput() DDRC &= ~(1 << DDC3)
+#define fan3ControlPinLow() PORTC &= ~(1 << PORTC3)
+
+#define fan4ControlPinOutput() DDRC |= (1 << DDC0)
+#define fan4ControlPinInput() DDRC &= ~(1 << DDC0)
+#define fan4ControlPinLow() PORTC &= ~(1 << PORTC0)
+
+#define fan5ControlPinOutput() DDRC |= (1 << DDC1)
+#define fan5ControlPinInput() DDRC &= ~(1 << DDC1)
+#define fan5ControlPinLow() PORTC &= ~(1 << PORTC1)
+
+#define fan6ControlPinOutput() DDRC |= (1 << DDC2)
+#define fan6ControlPinInput() DDRC &= ~(1 << DDC2)
+#define fan6ControlPinLow() PORTC &= ~(1 << PORTC2)
+
+#define fan1TachoPinInput() DDRD &= ~(1 << DDD1)
+#define fan1TachoPinRead() (PIND & (1 << PIND1))
+
+#define fan2TachoPinInput() DDRD &= ~(1 << DDD0)
+#define fan2TachoPinRead() (PIND & (1 << PIND0))
+
+#define fan3TachoPinInput() DDRD &= ~(1 << DDD2)
+#define fan3TachoPinRead() (PIND & (1 << PIND2))
+
+#define fan4TachoPinInput() DDRB &= ~(1 << DDB2)
+#define fan4TachoPinRead() (PINB & (1 << PINB2))
+
+#define fan5TachoPinInput() DDRB &= ~(1 << DDB1)
+#define fan5TachoPinRead() (PINB & (1 << PINB1))
+
+#define fan6TachoPinInput() DDRB &= ~(1 << DDB0)
+#define fan6TachoPinRead() (PINB & (1 << PINB0))
+
 #define setLcdCursorPos(posX, posY) sendLcdCommand(0x80 | (posX + posY * 0x40))
 #define clearLcd() sendLcdCommand(0x01)
 
@@ -47,6 +103,8 @@ const int8_t lcdInitCommands[] PROGMEM = {
 };
 
 uint8_t lastSatelliteData = 0;
+uint8_t lastPressedButton = 0;
+uint8_t timerDelay = 0;
 
 void initializePinModes() {
     
@@ -62,6 +120,30 @@ void initializePinModes() {
     satelliteSckPinHigh();
     satelliteSckPinOutput();
     satelliteDataPinInput();
+    
+    button1PinInput();
+    button2PinInput();
+    button3PinInput();
+    
+    fan1ControlPinLow();
+    fan2ControlPinLow();
+    fan3ControlPinLow();
+    fan4ControlPinLow();
+    fan5ControlPinLow();
+    fan6ControlPinLow();
+    fan1ControlPinInput();
+    fan2ControlPinInput();
+    fan3ControlPinInput();
+    fan4ControlPinInput();
+    fan5ControlPinInput();
+    fan6ControlPinInput();
+    
+    fan1TachoPinInput();
+    fan2TachoPinInput();
+    fan3TachoPinInput();
+    fan4TachoPinInput();
+    fan5TachoPinInput();
+    fan6TachoPinInput();
 }
 
 void sendLcdInt8(int8_t data) {
@@ -157,28 +239,62 @@ uint16_t readTemperature() {
     return temperature;
 }
 
+uint8_t getPressedButton() {
+    if (!button1PinRead()) {
+        return PREV_BUTTON;
+    } else if (!button2PinRead()) {
+        return NEXT_BUTTON;
+    } else if (!button3PinRead()) {
+        return ENTER_BUTTON;
+    } else {
+        return 0;
+    }
+}
+
+void initializeTimer() {
+    // Enable CTC timer mode, and use clock divided by 1024.
+    TCCR1B |= (1 << WGM12) | (1 << CS02) | (1 << CS00);
+    // Set maximum timer value to be 50 ms.
+    OCR1A = 390;
+    // Set initial timer value.
+    TCNT1 = 0;
+    // Configure interrupt to run when timer reaches maximum value.
+    TIMSK1 |= (1 << OCIE1A);
+    // Enable interrupts.
+    sei();
+}
+
+// Interrupt triggered by timer.
+ISR(TIMER1_COMPA_vect) {
+    uint8_t pressedButton = getPressedButton();
+    if (pressedButton > 0) {
+        lastPressedButton = pressedButton;
+    }
+    timerDelay += 1;
+}
+
 int main(void) {
     
     initializePinModes();
     initializeLcd();
+    initializeTimer();
     
     clearLcd();
+    uint8_t fanShouldRun = false;
     while (true) {
-        uint16_t temperature = readTemperature();
-        uint8_t text[10];
-        itoa(temperature, text, 10);
-        setLcdCursorPos(0, 0);
-        uint8_t hasFoundEnd = false;
-        for (uint8_t index = 0; index < 10; index++) {
-            int8_t character = text[index];
-            if (character == 0) {
-                hasFoundEnd = true;
+        if (timerDelay > 200) {
+            timerDelay = 0;
+            fanShouldRun = !fanShouldRun;
+            if (fanShouldRun) {
+                fan1ControlPinOutput();
+            } else {
+                fan1ControlPinInput();
             }
-            if (hasFoundEnd) {
-                character = ' ';
-            }
-            sendLcdCharacter(character);
         }
+        setLcdCursorPos(0, 0);
+        sendLcdCharacter('0' + fanShouldRun);
+        sendLcdCharacter(fan1TachoPinRead() ? '1' : '0');
+        sendLcdCharacter('0' + lastPressedButton);
     }
     
     return 0;

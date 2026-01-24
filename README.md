@@ -22,7 +22,7 @@ I reasoned that this should work, because the transistor will only be enabled if
 
 I feel embarrassed to have made this mistake, but at least I learned a lesson: Do NOT use GPIO to control current through a resistor to voltage above VCC! Current will flow even if the GPIO is an input!
 
-As it stands, **the current BreadBooster design does not work, so do not build it yourself!** I'm only leaving this repo to document the work I did before I found the design flaw. The design could be salvaged by adding an additional NPN transistor before each PNP transistor, but I'm not going to do that right now...
+As it stands, **the current BreadBooster design does not work, so do not build it yourself!** The design could be salvaged by adding an additional NPN transistor before each PNP transistor. Maybe I will try that soon...
 
 ## Parts List
 

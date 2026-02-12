@@ -56,26 +56,32 @@
 #define fan1ControlPinOutput() DDRC |= (1 << DDC5)
 #define fan1ControlPinInput() DDRC &= ~(1 << DDC5)
 #define fan1ControlPinLow() PORTC &= ~(1 << PORTC5)
+#define fan1ControlPinHigh() PORTC |= (1 << PORTC5)
 
 #define fan2ControlPinOutput() DDRC |= (1 << DDC4)
 #define fan2ControlPinInput() DDRC &= ~(1 << DDC4)
 #define fan2ControlPinLow() PORTC &= ~(1 << PORTC4)
+#define fan2ControlPinHigh() PORTC |= (1 << PORTC4)
 
 #define fan3ControlPinOutput() DDRC |= (1 << DDC3)
 #define fan3ControlPinInput() DDRC &= ~(1 << DDC3)
 #define fan3ControlPinLow() PORTC &= ~(1 << PORTC3)
+#define fan3ControlPinHigh() PORTC |= (1 << PORTC3)
 
 #define fan4ControlPinOutput() DDRC |= (1 << DDC0)
 #define fan4ControlPinInput() DDRC &= ~(1 << DDC0)
 #define fan4ControlPinLow() PORTC &= ~(1 << PORTC0)
+#define fan4ControlPinHigh() PORTC |= (1 << PORTC0)
 
 #define fan5ControlPinOutput() DDRC |= (1 << DDC1)
 #define fan5ControlPinInput() DDRC &= ~(1 << DDC1)
 #define fan5ControlPinLow() PORTC &= ~(1 << PORTC1)
+#define fan5ControlPinHigh() PORTC |= (1 << PORTC1)
 
 #define fan6ControlPinOutput() DDRC |= (1 << DDC2)
 #define fan6ControlPinInput() DDRC &= ~(1 << DDC2)
 #define fan6ControlPinLow() PORTC &= ~(1 << PORTC2)
+#define fan6ControlPinHigh() PORTC |= (1 << PORTC2)
 
 #define fan1TachoPinInput() DDRD &= ~(1 << DDD1)
 #define fan1TachoPinRead() (PIND & (1 << PIND1))
@@ -282,12 +288,14 @@ int main(void) {
     clearLcd();
     uint8_t fanShouldRun = false;
     while (true) {
-        if (timerDelay > 200) {
+        if (timerDelay > 150) {
             timerDelay = 0;
             fanShouldRun = !fanShouldRun;
             if (fanShouldRun) {
+                fan1ControlPinHigh();
                 fan1ControlPinOutput();
             } else {
+                fan1ControlPinLow();
                 fan1ControlPinInput();
             }
         }

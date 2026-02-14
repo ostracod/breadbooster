@@ -11,9 +11,10 @@
 #define true 1
 #define false 0
 
-#define PREV_BUTTON 1
-#define NEXT_BUTTON 2
-#define ENTER_BUTTON 3
+#define BUTTON_NONE 0
+#define BUTTON_PREV 1
+#define BUTTON_NEXT 2
+#define BUTTON_ENTER 3
 
 #define TEMPERATURE_MARGIN 3
 #define OFF_THRESHOLD_ADDRESS ((uint8_t *)0)
@@ -24,6 +25,16 @@
 #define RUN_STATE_ON 1
 
 #define MAX_TACHOMETER_DELAY 10
+#define MAX_TIMEOUT_DELAY 30
+
+#define FAULT_NONE 0
+#define FAULT_TEMPERATURE 1
+#define FAULT_FAN 2
+
+#define SCREEN_AMOUNT 3
+#define SCREEN_MAIN 0
+#define SCREEN_OFF_THRESH 1
+#define SCREEN_ON_THRESH 2
 
 #define sleepMilliseconds(milliseconds) _delay_ms(milliseconds)
 #define sleepMicroseconds(microseconds) _delay_us(microseconds)
@@ -119,19 +130,41 @@ const int8_t lcdInitCommands[] PROGMEM = {
     0x39, 0x1C, 0x52, 0x69, 0x74, 0x38, 0x0C, 0x01, 0x06
 };
 
+const int8_t idleText[] PROGMEM = "Idle   ";
+const int8_t runningText[] PROGMEM = "Running";
+const int8_t offThresholdText[] PROGMEM = "OFF Threshold:";
+const int8_t onThresholdText[] PROGMEM = "ON Threshold:";
+const int8_t healthyText[] PROGMEM = "Healthy";
+const int8_t tempFaultText[] PROGMEM = "Temp fault!";
+const int8_t fanText[] PROGMEM = "Fan ";
+const int8_t faultText[] PROGMEM = " fault!";
+
 uint8_t lastSatelliteData = 0;
-uint8_t lastPressedButton = 0;
+uint8_t lastPressedButton = BUTTON_NONE;
 uint8_t buttonIsPressed = false;
 uint8_t secondDelay = 0;
 uint8_t fanDelay = 0;
 uint8_t tachometerDelay = 0;
+uint8_t timeoutDelay = 0;
+
 uint8_t hasTemperatureFault = false;
-uint8_t temperatureC = 0;
+uint8_t currentTemperature = 0;
 uint8_t offThreshold;
 uint8_t onThreshold;
 uint8_t runState = RUN_STATE_OFF;
 uint8_t runningFanAmount = 0;
 uint8_t stuckFan = 0;
+uint8_t currentFault = FAULT_NONE;
+
+uint8_t currentScreen;
+uint8_t isEditingThresh = false;
+uint8_t editThreshold;
+uint8_t heartbeat = 0;
+
+uint8_t displayedTemperature;
+uint8_t displayedRunState;
+uint8_t displayedHeartbeat;
+uint8_t displayedFault;
 
 void controlFans(uint8_t enableAmount) {
     if (enableAmount >= 1) {
@@ -325,13 +358,13 @@ uint8_t readTachometers() {
 
 uint8_t getPressedButton() {
     if (!button1PinRead()) {
-        return PREV_BUTTON;
+        return BUTTON_PREV;
     } else if (!button2PinRead()) {
-        return NEXT_BUTTON;
+        return BUTTON_NEXT;
     } else if (!button3PinRead()) {
-        return ENTER_BUTTON;
+        return BUTTON_ENTER;
     } else {
-        return 0;
+        return BUTTON_NONE;
     }
 }
 
@@ -362,12 +395,18 @@ ISR(TIMER1_COMPA_vect) {
         if (tachometerDelay < MAX_TACHOMETER_DELAY) {
             tachometerDelay += 1;
         }
+        if (timeoutDelay < MAX_TIMEOUT_DELAY) {
+            timeoutDelay += 1;
+        }
+        heartbeat = 1 - heartbeat;
         secondDelay = 0;
     }
 }
 
 void initializeThresholds() {
+    eeprom_busy_wait();
     offThreshold = eeprom_read_byte(OFF_THRESHOLD_ADDRESS);
+    eeprom_busy_wait();
     onThreshold = eeprom_read_byte(ON_THRESHOLD_ADDRESS);
     if (offThreshold == 0xFF || onThreshold == 0xFF) {
         offThreshold = 40;
@@ -379,20 +418,20 @@ void updateTemperature() {
     uint16_t temperatureV = readTemperatureV();
     hasTemperatureFault = (temperatureV == 0);
     if (hasTemperatureFault) {
-        temperatureC = 0;
+        currentTemperature = 0;
         return;
     }
     // At 25 degrees C, voltage = 750 mV = 153.6 ADC value
     // Increase of 1 degree C = 10 mV = 2.05 ADC value
-    uint8_t instantTemperatureC = (uint8_t)(25 + ((int16_t)temperatureV - 154) / 2);
-    if (temperatureC == 0) {
-        temperatureC = instantTemperatureC;
+    uint8_t temperatureC = (uint8_t)(25 + ((int16_t)temperatureV - 154) / 2);
+    if (currentTemperature == 0) {
+        currentTemperature = temperatureC;
     }
-    if (instantTemperatureC < temperatureC - TEMPERATURE_MARGIN) {
-        temperatureC -= 1;
+    if (temperatureC < currentTemperature - TEMPERATURE_MARGIN) {
+        currentTemperature -= 1;
     }
-    if (instantTemperatureC > temperatureC + TEMPERATURE_MARGIN) {
-        temperatureC += 1;
+    if (temperatureC > currentTemperature + TEMPERATURE_MARGIN) {
+        currentTemperature += 1;
     }
 }
 
@@ -400,10 +439,10 @@ void updateFans() {
     if (hasTemperatureFault) {
         runState = RUN_STATE_OFF;
     } else {
-        if (temperatureC <= offThreshold) {
+        if (currentTemperature <= offThreshold) {
             runState = RUN_STATE_OFF;
         }
-        if (temperatureC >= onThreshold) {
+        if (currentTemperature >= onThreshold) {
             runState = RUN_STATE_ON;
         }
     }
@@ -449,19 +488,227 @@ void updateTachometers() {
     }
 }
 
+void updateFault() {
+    if (hasTemperatureFault) {
+        currentFault = FAULT_TEMPERATURE;
+    } else if (stuckFan > 0) {
+        currentFault = FAULT_FAN + stuckFan - 1;
+    } else {
+        currentFault = FAULT_NONE;
+    }
+}
+
+// `text` must be a pointer in PROGMEM.
+void displayText(uint8_t posX, uint8_t posY, const uint8_t *text) {
+    setLcdCursorPos(posX, posY);
+    uint8_t index = 0;
+    while (true) {
+        int8_t character = pgm_read_byte(text + index);
+        if (character == 0) {
+            break;
+        }
+        sendLcdCharacter(character);
+        index += 1;
+    }
+}
+
+void displayTemperature(uint8_t posX, uint8_t posY, uint8_t temperature) {
+    uint8_t offsetX = 0;
+    setLcdCursorPos(posX, posY);
+    if (temperature == 0) {
+        sendLcdCharacter('?');
+        offsetX += 1;
+    } else {
+        uint8_t text[5];
+        itoa(temperature, text, 10);
+        for (uint8_t index = 0; index < 5; index++) {
+            int8_t character = text[index];
+            if (character == 0) {
+                break;
+            }
+            sendLcdCharacter(character);
+            offsetX += 1;
+        }
+    }
+    sendLcdCharacter(0xF2); // Degree symbol.
+    sendLcdCharacter('C');
+    offsetX += 2;
+    while (offsetX < 5) {
+        sendLcdCharacter(' ');
+        offsetX += 1;
+    }
+}
+
+void displayCurrentTemp() {
+    displayTemperature(0, 0, currentTemperature);
+    displayedTemperature = currentTemperature;
+}
+
+void displayRunState() {
+    const uint8_t *text = NULL;
+    if (runState == RUN_STATE_OFF) {
+        text = idleText;
+    }
+    if (runState == RUN_STATE_ON) {
+        text = runningText;
+    }
+    if (text != NULL) {
+        displayText(8, 0, text);
+    }
+    displayedRunState = runState;
+}
+
+void displayHeartbeat() {
+    setLcdCursorPos(0, 1);
+    // Overscore or underscore.
+    sendLcdCharacter(heartbeat ? 0xFF : '_');
+    displayedHeartbeat = heartbeat;
+}
+
+void displayFault() {
+    if (currentFault == FAULT_NONE) {
+        displayText(2, 1, healthyText);
+    } else if (currentFault == FAULT_TEMPERATURE) {
+        displayText(2, 1, tempFaultText);
+    } else if (currentFault >= FAULT_FAN) {
+        uint8_t fanIndex = currentFault - FAULT_FAN;
+        displayText(2, 1, fanText);
+        sendLcdCharacter('1' + fanIndex);
+        displayText(8, 1, faultText);
+    }
+    displayedFault = currentFault;
+}
+
+void displayEditCursor() {
+    setLcdCursorPos(0, 1);
+    // Arrow or space.
+    sendLcdCharacter(isEditingThresh ? 0x7E : ' ');
+}
+
+void showScreen(uint8_t screen) {
+    currentScreen = screen;
+    isEditingThresh = false;
+    clearLcd();
+    if (currentScreen == SCREEN_MAIN) {
+        displayCurrentTemp();
+        displayRunState();
+        displayHeartbeat();
+        displayFault();
+    } else if (currentScreen == SCREEN_OFF_THRESH) {
+        displayText(0, 0, offThresholdText);
+        displayTemperature(2, 1, offThreshold);
+    } else if (currentScreen == SCREEN_ON_THRESH) {
+        displayText(0, 0, onThresholdText);
+        displayTemperature(2, 1, onThreshold);
+    }
+}
+
+void checkTimeout() {
+    if (currentScreen != SCREEN_MAIN && timeoutDelay >= MAX_TIMEOUT_DELAY) {
+        showScreen(SCREEN_MAIN);
+    }
+}
+
+void updateScreen() {
+    if (currentScreen != SCREEN_MAIN) {
+        return;
+    }
+    if (currentTemperature != displayedTemperature) {
+        displayCurrentTemp();
+    }
+    if (runState != displayedRunState) {
+        displayRunState();
+    }
+    if (heartbeat != displayedHeartbeat) {
+        displayHeartbeat();
+    }
+    if (currentFault != displayedFault) {
+        displayFault();
+    }
+}
+
+void saveThreshold() {
+    if (currentScreen == SCREEN_OFF_THRESH) {
+        offThreshold = editThreshold;
+        if (onThreshold <= offThreshold) {
+            onThreshold = offThreshold + 1;
+        }
+    } else if (currentScreen == SCREEN_ON_THRESH) {
+        onThreshold = editThreshold;
+        if (offThreshold >= onThreshold) {
+            offThreshold = onThreshold - 1;
+        }
+    }
+    eeprom_busy_wait();
+    eeprom_write_byte(OFF_THRESHOLD_ADDRESS, offThreshold);
+    eeprom_busy_wait();
+    eeprom_write_byte(ON_THRESHOLD_ADDRESS, onThreshold);
+    isEditingThresh = false;
+    displayEditCursor();
+}
+
+void handleButton() {
+    if (lastPressedButton == BUTTON_NONE) {
+        return;
+    }
+    uint8_t button = lastPressedButton;
+    lastPressedButton = BUTTON_NONE;
+    timeoutDelay = 0;
+    if (isEditingThresh) {
+        if (button == BUTTON_ENTER) {
+            saveThreshold();
+        } else {
+            uint8_t lastThreshold = editThreshold;
+            if (button == BUTTON_PREV) {
+                if (editThreshold > 10) {
+                    editThreshold -= 1;
+                }
+            } else if (button == BUTTON_NEXT) {
+                if (editThreshold < 90) {
+                    editThreshold += 1;
+                }
+            }
+            if (editThreshold != lastThreshold) {
+                displayTemperature(2, 1, editThreshold);
+            }
+        }
+    } else {
+        if (button == BUTTON_PREV) {
+            uint8_t nextScreen = (currentScreen > 0) ? currentScreen - 1 : SCREEN_AMOUNT - 1;
+            showScreen(nextScreen);
+        } else if (button == BUTTON_NEXT) {
+            uint8_t nextScreen = (currentScreen < SCREEN_AMOUNT - 1) ? currentScreen + 1 : 0;
+            showScreen(nextScreen);
+        } else if (button == BUTTON_ENTER) {
+            if (currentScreen == SCREEN_OFF_THRESH) {
+                editThreshold = offThreshold;
+            } else if (currentScreen == SCREEN_ON_THRESH) {
+                editThreshold = onThreshold;
+            } else {
+                return;
+            }
+            isEditingThresh = true;
+            displayEditCursor();
+        }
+    }
+}
+
 int main(void) {
     
     initializePinModes();
     initializeLcd();
     initializeTimer();
     initializeThresholds();
+    showScreen(SCREEN_MAIN);
     
     while (true) {
         updateTemperature();
         updateFans();
         updateTachometers();
-        // TODO: Update display.
-        
+        updateFault();
+        checkTimeout();
+        updateScreen();
+        handleButton();
     }
     
     return 0;

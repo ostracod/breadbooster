@@ -26,6 +26,7 @@
 
 #define MAX_TACHOMETER_DELAY 10
 #define MAX_TIMEOUT_DELAY 30
+#define MAX_STUCK_COUNT 5
 
 #define FAULT_NONE 0
 #define FAULT_TEMPERATURE 1
@@ -145,6 +146,7 @@ uint8_t buttonIsPressed = false;
 uint8_t secondDelay = 0;
 uint8_t fanDelay = 0;
 uint8_t tachometerDelay = 0;
+uint8_t stuckDelay = 0;
 uint8_t timeoutDelay = 0;
 
 uint8_t hasTemperatureFault = false;
@@ -153,6 +155,7 @@ uint8_t offThreshold;
 uint8_t onThreshold;
 uint8_t runState = RUN_STATE_OFF;
 uint8_t runningFanAmount = 0;
+uint8_t stuckCounts[FAN_AMOUNT];
 uint8_t stuckFan = 0;
 uint8_t currentFault = FAULT_NONE;
 
@@ -395,6 +398,7 @@ ISR(TIMER1_COMPA_vect) {
         if (tachometerDelay < MAX_TACHOMETER_DELAY) {
             tachometerDelay += 1;
         }
+        stuckDelay = 1;
         if (timeoutDelay < MAX_TIMEOUT_DELAY) {
             timeoutDelay += 1;
         }
@@ -460,28 +464,43 @@ void updateFans() {
 }
 
 void updateTachometers() {
+    
+    // Only measure tachometers after all fans have been running for a little while.
     if (runningFanAmount < FAN_AMOUNT) {
         tachometerDelay = 0;
         return;
     }
     if (tachometerDelay < MAX_TACHOMETER_DELAY) {
-        // Only measure tachometers after all fans have been running for a little while.
         return;
     }
-    uint8_t stuckTachometers = (uint8_t)~(0xFF << FAN_AMOUNT);
-    uint8_t lastTachometers = readTachometers();
-    for (uint8_t count = 0; count < 100; count++) {
+    
+    // Detect which tachometers change during 100 ms.
+    uint8_t changedTachometers = 0;
+    uint8_t startTachometers = readTachometers();
+    for (uint8_t count = 0; count < 20; count++) {
         sleepMilliseconds(5);
         uint8_t currentTachometers = readTachometers();
-        uint8_t changedTachometers = currentTachometers ^ lastTachometers;
-        stuckTachometers &= ~changedTachometers;
-        if (stuckTachometers == 0) {
-            stuckFan = 0;
-            return;
+        changedTachometers |= currentTachometers ^ startTachometers;
+        if (changedTachometers == (uint8_t)~(0xFF << FAN_AMOUNT)) {
+            break;
         }
     }
-    for (uint8_t index = 0; index < FAN_AMOUNT; index += 1) {
-        if (stuckTachometers & (1 << index)) {
+    
+    // Update stuck counts of tachometers.
+    uint8_t shouldCountStuck = (stuckDelay > 0);
+    stuckDelay = 0;
+    for (uint8_t index = 0; index < FAN_AMOUNT; index++) {
+        if (changedTachometers & (1 << index)) {
+            stuckCounts[index] = 0;
+        } else if (shouldCountStuck && stuckCounts[index] < MAX_STUCK_COUNT) {
+            stuckCounts[index] += 1;
+        }
+    }
+    
+    // Determine if any fan is stuck.
+    stuckFan = 0;
+    for (uint8_t index = 0; index < FAN_AMOUNT; index++) {
+        if (stuckCounts[index] >= MAX_STUCK_COUNT) {
             stuckFan = index + 1;
             break;
         }
@@ -699,6 +718,9 @@ int main(void) {
     initializeLcd();
     initializeTimer();
     initializeThresholds();
+    for (uint8_t index = 0; index < FAN_AMOUNT; index++) {
+        stuckCounts[index] = 0;
+    }
     showScreen(SCREEN_MAIN);
     
     while (true) {

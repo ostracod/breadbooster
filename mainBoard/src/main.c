@@ -4,6 +4,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
+#include <avr/eeprom.h>
 #include <util/delay.h>
 
 #define NULL ((void *)0)
@@ -13,6 +14,16 @@
 #define PREV_BUTTON 1
 #define NEXT_BUTTON 2
 #define ENTER_BUTTON 3
+
+#define TEMPERATURE_MARGIN 3
+#define OFF_THRESHOLD_ADDRESS ((uint8_t *)0)
+#define ON_THRESHOLD_ADDRESS ((uint8_t *)1)
+
+#define FAN_AMOUNT 6
+#define RUN_STATE_OFF 0
+#define RUN_STATE_ON 1
+
+#define MAX_TACHOMETER_DELAY 10
 
 #define sleepMilliseconds(milliseconds) _delay_ms(milliseconds)
 #define sleepMicroseconds(microseconds) _delay_us(microseconds)
@@ -55,33 +66,33 @@
 
 #define fan1ControlPinOutput() DDRC |= (1 << DDC5)
 #define fan1ControlPinInput() DDRC &= ~(1 << DDC5)
-#define fan1ControlPinLow() PORTC &= ~(1 << PORTC5)
 #define fan1ControlPinHigh() PORTC |= (1 << PORTC5)
+#define fan1ControlPinLow() PORTC &= ~(1 << PORTC5)
 
 #define fan2ControlPinOutput() DDRC |= (1 << DDC4)
 #define fan2ControlPinInput() DDRC &= ~(1 << DDC4)
-#define fan2ControlPinLow() PORTC &= ~(1 << PORTC4)
 #define fan2ControlPinHigh() PORTC |= (1 << PORTC4)
+#define fan2ControlPinLow() PORTC &= ~(1 << PORTC4)
 
 #define fan3ControlPinOutput() DDRC |= (1 << DDC3)
 #define fan3ControlPinInput() DDRC &= ~(1 << DDC3)
-#define fan3ControlPinLow() PORTC &= ~(1 << PORTC3)
 #define fan3ControlPinHigh() PORTC |= (1 << PORTC3)
+#define fan3ControlPinLow() PORTC &= ~(1 << PORTC3)
 
 #define fan4ControlPinOutput() DDRC |= (1 << DDC0)
 #define fan4ControlPinInput() DDRC &= ~(1 << DDC0)
-#define fan4ControlPinLow() PORTC &= ~(1 << PORTC0)
 #define fan4ControlPinHigh() PORTC |= (1 << PORTC0)
+#define fan4ControlPinLow() PORTC &= ~(1 << PORTC0)
 
 #define fan5ControlPinOutput() DDRC |= (1 << DDC1)
 #define fan5ControlPinInput() DDRC &= ~(1 << DDC1)
-#define fan5ControlPinLow() PORTC &= ~(1 << PORTC1)
 #define fan5ControlPinHigh() PORTC |= (1 << PORTC1)
+#define fan5ControlPinLow() PORTC &= ~(1 << PORTC1)
 
 #define fan6ControlPinOutput() DDRC |= (1 << DDC2)
 #define fan6ControlPinInput() DDRC &= ~(1 << DDC2)
-#define fan6ControlPinLow() PORTC &= ~(1 << PORTC2)
 #define fan6ControlPinHigh() PORTC |= (1 << PORTC2)
+#define fan6ControlPinLow() PORTC &= ~(1 << PORTC2)
 
 #define fan1TachoPinInput() DDRD &= ~(1 << DDD1)
 #define fan1TachoPinRead() (PIND & (1 << PIND1))
@@ -110,7 +121,62 @@ const int8_t lcdInitCommands[] PROGMEM = {
 
 uint8_t lastSatelliteData = 0;
 uint8_t lastPressedButton = 0;
-uint8_t timerDelay = 0;
+uint8_t buttonIsPressed = false;
+uint8_t secondDelay = 0;
+uint8_t fanDelay = 0;
+uint8_t tachometerDelay = 0;
+uint8_t hasTemperatureFault = false;
+uint8_t temperatureC = 0;
+uint8_t offThreshold;
+uint8_t onThreshold;
+uint8_t runState = RUN_STATE_OFF;
+uint8_t runningFanAmount = 0;
+uint8_t stuckFan = 0;
+
+void controlFans(uint8_t enableAmount) {
+    if (enableAmount >= 1) {
+        fan1ControlPinHigh();
+        fan1ControlPinOutput();
+    } else {
+        fan1ControlPinLow();
+        fan1ControlPinInput();
+    }
+    if (enableAmount >= 2) {
+        fan4ControlPinHigh();
+        fan4ControlPinOutput();
+    } else {
+        fan4ControlPinLow();
+        fan4ControlPinInput();
+    }
+    if (enableAmount >= 3) {
+        fan2ControlPinHigh();
+        fan2ControlPinOutput();
+    } else {
+        fan2ControlPinLow();
+        fan2ControlPinInput();
+    }
+    if (enableAmount >= 4) {
+        fan5ControlPinHigh();
+        fan5ControlPinOutput();
+    } else {
+        fan5ControlPinLow();
+        fan5ControlPinInput();
+    }
+    if (enableAmount >= 5) {
+        fan3ControlPinHigh();
+        fan3ControlPinOutput();
+    } else {
+        fan3ControlPinLow();
+        fan3ControlPinInput();
+    }
+    if (enableAmount >= 6) {
+        fan6ControlPinHigh();
+        fan6ControlPinOutput();
+    } else {
+        fan6ControlPinLow();
+        fan6ControlPinInput();
+    }
+}
 
 void initializePinModes() {
     
@@ -131,18 +197,7 @@ void initializePinModes() {
     button2PinInput();
     button3PinInput();
     
-    fan1ControlPinLow();
-    fan2ControlPinLow();
-    fan3ControlPinLow();
-    fan4ControlPinLow();
-    fan5ControlPinLow();
-    fan6ControlPinLow();
-    fan1ControlPinInput();
-    fan2ControlPinInput();
-    fan3ControlPinInput();
-    fan4ControlPinInput();
-    fan5ControlPinInput();
-    fan6ControlPinInput();
+    controlFans(0);
     
     fan1TachoPinInput();
     fan2TachoPinInput();
@@ -211,7 +266,7 @@ uint8_t readSatelliteRun() {
     return runLength;
 }
 
-uint16_t readTemperature() {
+uint16_t readTemperatureV() {
     // Wait for run length 3, which occurs at the start of a message.
     uint8_t count = 0;
     while (true) {
@@ -231,18 +286,41 @@ uint16_t readTemperature() {
     }
     // Allow ADC to run on satellite.
     sleepMilliseconds(4);
-    uint16_t temperature = 0;
+    uint16_t temperatureV = 0;
     for (uint8_t offset = 0; offset < 10; offset++) {
         uint8_t runLength = readSatelliteRun();
         if (runLength == 2) {
-            temperature |= ((uint16_t)1 << offset);
+            temperatureV |= ((uint16_t)1 << offset);
         }
         if (runLength > 2) {
             // Run lengths in payload must be 1 or 2.
             return 0;
         }
     }
-    return temperature;
+    return temperatureV;
+}
+
+uint8_t readTachometers() {
+    uint8_t output = 0;
+    if (fan1TachoPinRead()) {
+        output |= 0x01;
+    }
+    if (fan1TachoPinRead()) {
+        output |= 0x02;
+    }
+    if (fan1TachoPinRead()) {
+        output |= 0x04;
+    }
+    if (fan1TachoPinRead()) {
+        output |= 0x08;
+    }
+    if (fan1TachoPinRead()) {
+        output |= 0x10;
+    }
+    if (fan1TachoPinRead()) {
+        output |= 0x20;
+    }
+    return output;
 }
 
 uint8_t getPressedButton() {
@@ -272,11 +350,103 @@ void initializeTimer() {
 
 // Interrupt triggered by timer.
 ISR(TIMER1_COMPA_vect) {
+    uint8_t lastButtonIsPressed = buttonIsPressed;
     uint8_t pressedButton = getPressedButton();
-    if (pressedButton > 0) {
+    buttonIsPressed = (pressedButton > 0);
+    if (buttonIsPressed && !lastButtonIsPressed) {
         lastPressedButton = pressedButton;
     }
-    timerDelay += 1;
+    secondDelay += 1;
+    if (secondDelay >= 20) {
+        fanDelay += 1;
+        if (tachometerDelay < MAX_TACHOMETER_DELAY) {
+            tachometerDelay += 1;
+        }
+        secondDelay = 0;
+    }
+}
+
+void initializeThresholds() {
+    offThreshold = eeprom_read_byte(OFF_THRESHOLD_ADDRESS);
+    onThreshold = eeprom_read_byte(ON_THRESHOLD_ADDRESS);
+    if (offThreshold == 0xFF || onThreshold == 0xFF) {
+        offThreshold = 40;
+        onThreshold = 43;
+    }
+}
+
+void updateTemperature() {
+    uint16_t temperatureV = readTemperatureV();
+    hasTemperatureFault = (temperatureV == 0);
+    if (hasTemperatureFault) {
+        temperatureC = 0;
+        return;
+    }
+    // At 25 degrees C, voltage = 750 mV = 153.6 ADC value
+    // Increase of 1 degree C = 10 mV = 2.05 ADC value
+    uint8_t instantTemperatureC = (uint8_t)(25 + ((int16_t)temperatureV - 154) / 2);
+    if (temperatureC == 0) {
+        temperatureC = instantTemperatureC;
+    }
+    if (instantTemperatureC < temperatureC - TEMPERATURE_MARGIN) {
+        temperatureC -= 1;
+    }
+    if (instantTemperatureC > temperatureC + TEMPERATURE_MARGIN) {
+        temperatureC += 1;
+    }
+}
+
+void updateFans() {
+    if (hasTemperatureFault) {
+        runState = RUN_STATE_OFF;
+    } else {
+        if (temperatureC <= offThreshold) {
+            runState = RUN_STATE_OFF;
+        }
+        if (temperatureC >= onThreshold) {
+            runState = RUN_STATE_ON;
+        }
+    }
+    if (fanDelay < 5) {
+        return;
+    }
+    fanDelay = 0;
+    if (runState == RUN_STATE_OFF && runningFanAmount > 0) {
+        runningFanAmount -= 1;
+    }
+    if (runState == RUN_STATE_ON && runningFanAmount < FAN_AMOUNT) {
+        runningFanAmount += 1;
+    }
+    controlFans(runningFanAmount);
+}
+
+void updateTachometers() {
+    if (runningFanAmount < FAN_AMOUNT) {
+        tachometerDelay = 0;
+        return;
+    }
+    if (tachometerDelay < MAX_TACHOMETER_DELAY) {
+        // Only measure tachometers after all fans have been running for a little while.
+        return;
+    }
+    uint8_t stuckTachometers = (uint8_t)~(0xFF << FAN_AMOUNT);
+    uint8_t lastTachometers = readTachometers();
+    for (uint8_t count = 0; count < 100; count++) {
+        sleepMilliseconds(5);
+        uint8_t currentTachometers = readTachometers();
+        uint8_t changedTachometers = currentTachometers ^ lastTachometers;
+        stuckTachometers &= ~changedTachometers;
+        if (stuckTachometers == 0) {
+            stuckFan = 0;
+            return;
+        }
+    }
+    for (uint8_t index = 0; index < FAN_AMOUNT; index += 1) {
+        if (stuckTachometers & (1 << index)) {
+            stuckFan = index + 1;
+            break;
+        }
+    }
 }
 
 int main(void) {
@@ -284,25 +454,14 @@ int main(void) {
     initializePinModes();
     initializeLcd();
     initializeTimer();
+    initializeThresholds();
     
-    clearLcd();
-    uint8_t fanShouldRun = false;
     while (true) {
-        if (timerDelay > 150) {
-            timerDelay = 0;
-            fanShouldRun = !fanShouldRun;
-            if (fanShouldRun) {
-                fan1ControlPinHigh();
-                fan1ControlPinOutput();
-            } else {
-                fan1ControlPinLow();
-                fan1ControlPinInput();
-            }
-        }
-        setLcdCursorPos(0, 0);
-        sendLcdCharacter('0' + fanShouldRun);
-        sendLcdCharacter(fan1TachoPinRead() ? '1' : '0');
-        sendLcdCharacter('0' + lastPressedButton);
+        updateTemperature();
+        updateFans();
+        updateTachometers();
+        // TODO: Update display.
+        
     }
     
     return 0;

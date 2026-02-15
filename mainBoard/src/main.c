@@ -135,8 +135,8 @@ const int8_t idleText[] PROGMEM = "Idle   ";
 const int8_t runningText[] PROGMEM = "Running";
 const int8_t offThresholdText[] PROGMEM = "OFF Threshold:";
 const int8_t onThresholdText[] PROGMEM = "ON Threshold:";
-const int8_t healthyText[] PROGMEM = "Healthy";
-const int8_t tempFaultText[] PROGMEM = "Temp fault!";
+const int8_t healthyText[] PROGMEM = "Healthy     ";
+const int8_t tempFaultText[] PROGMEM = "Temp fault! ";
 const int8_t fanText[] PROGMEM = "Fan ";
 const int8_t faultText[] PROGMEM = " fault!";
 

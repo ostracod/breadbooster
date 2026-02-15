@@ -341,19 +341,19 @@ uint8_t readTachometers() {
     if (fan1TachoPinRead()) {
         output |= 0x01;
     }
-    if (fan1TachoPinRead()) {
+    if (fan2TachoPinRead()) {
         output |= 0x02;
     }
-    if (fan1TachoPinRead()) {
+    if (fan3TachoPinRead()) {
         output |= 0x04;
     }
-    if (fan1TachoPinRead()) {
+    if (fan4TachoPinRead()) {
         output |= 0x08;
     }
-    if (fan1TachoPinRead()) {
+    if (fan5TachoPinRead()) {
         output |= 0x10;
     }
-    if (fan1TachoPinRead()) {
+    if (fan6TachoPinRead()) {
         output |= 0x20;
     }
     return output;
@@ -593,7 +593,7 @@ void displayFault() {
         uint8_t fanIndex = currentFault - FAULT_FAN;
         displayText(2, 1, fanText);
         sendLcdCharacter('1' + fanIndex);
-        displayText(8, 1, faultText);
+        displayText(7, 1, faultText);
     }
     displayedFault = currentFault;
 }

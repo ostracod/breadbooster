@@ -17,25 +17,32 @@
 #define BUTTON_ENTER 3
 
 #define TEMPERATURE_MARGIN 3
-#define OFF_THRESHOLD_ADDRESS ((uint8_t *)0)
-#define ON_THRESHOLD_ADDRESS ((uint8_t *)1)
+#define ADDRESS_OFF_THRESHOLD 0
+#define ADDRESS_ON_THRESHOLD 1
+#define ADDRESS_SPIKE_WIDTH 2
+#define ADDRESS_SPIKE_HEIGHT 3
+#define ADDRESS_SPIKE_RESET 4
 
 #define FAN_AMOUNT 6
 #define RUN_STATE_OFF 0
 #define RUN_STATE_ON 1
+#define RUN_STATE_SPIKE 2
 
 #define MAX_TACHOMETER_DELAY 10
 #define MAX_TIMEOUT_DELAY 30
 #define MAX_STUCK_COUNT 5
+#define MAX_SPIKE_WIDTH 10
 
 #define FAULT_NONE 0
 #define FAULT_TEMPERATURE 1
 #define FAULT_FAN 2
 
-#define SCREEN_AMOUNT 3
+#define TUNABLE_AMOUNT 5
+#define SCREEN_AMOUNT (1 + TUNABLE_AMOUNT)
 #define SCREEN_MAIN 0
-#define SCREEN_OFF_THRESH 1
-#define SCREEN_ON_THRESH 2
+
+#define TUNABLE_TEMP 0
+#define TUNABLE_TIME 1
 
 #define sleepMilliseconds(milliseconds) _delay_ms(milliseconds)
 #define sleepMicroseconds(microseconds) _delay_us(microseconds)
@@ -127,14 +134,27 @@
 #define setLcdCursorPos(posX, posY) sendLcdCommand(0x80 | (posX + posY * 0x40))
 #define clearLcd() sendLcdCommand(0x01)
 
+typedef struct {
+    const int8_t *title; // Must be a pointer in PROGMEM.
+    uint8_t tunableType;
+    uint8_t *valuePointer;
+    uint8_t minValue;
+    uint8_t maxValue;
+    void (*save)(void);
+} tunableScreen_t;
+
 const int8_t lcdInitCommands[] PROGMEM = {
     0x39, 0x1C, 0x52, 0x69, 0x74, 0x38, 0x0C, 0x01, 0x06
 };
 
 const int8_t idleText[] PROGMEM = "Idle   ";
 const int8_t runningText[] PROGMEM = "Running";
-const int8_t offThresholdText[] PROGMEM = "OFF Threshold:";
-const int8_t onThresholdText[] PROGMEM = "ON Threshold:";
+const int8_t spikeText[] PROGMEM = "Spike  ";
+const int8_t offThresholdText[] PROGMEM = "Off threshold:";
+const int8_t onThresholdText[] PROGMEM = "On threshold:";
+const int8_t spikeWidthText[] PROGMEM = "Spike width:";
+const int8_t spikeHeightText[] PROGMEM = "Spike height:";
+const int8_t spikeResetText[] PROGMEM = "Spike reset:";
 const int8_t healthyText[] PROGMEM = "Healthy     ";
 const int8_t tempFaultText[] PROGMEM = "Temp fault! ";
 const int8_t fanText[] PROGMEM = "Fan ";
@@ -148,20 +168,29 @@ uint8_t fanDelay = 0;
 uint8_t tachometerDelay = 0;
 uint8_t stuckDelay = 0;
 uint8_t timeoutDelay = 0;
+uint8_t minuteDelay = 0;
 
 uint8_t hasTemperatureFault = false;
 uint8_t currentTemperature = 0;
 uint8_t offThreshold;
 uint8_t onThreshold;
+uint8_t spikeWidth;
+uint8_t spikeHeight;
+uint8_t spikeResetTime;
 uint8_t runState = RUN_STATE_OFF;
 uint8_t runningFanAmount = 0;
 uint8_t stuckCounts[FAN_AMOUNT];
 uint8_t stuckFan = 0;
 uint8_t currentFault = FAULT_NONE;
+uint8_t temperatureHistory[MAX_SPIKE_WIDTH];
+uint8_t historyLength = 0;
+uint8_t spikeCooldown = 0;
 
+tunableScreen_t tunableScreens[TUNABLE_AMOUNT];
 uint8_t currentScreen;
-uint8_t isEditingThresh = false;
-uint8_t editThreshold;
+tunableScreen_t *currentTunable;
+uint8_t isEditingTunable = false;
+uint8_t editValue;
 uint8_t heartbeat = 0;
 
 uint8_t displayedTemperature;
@@ -403,18 +432,10 @@ ISR(TIMER1_COMPA_vect) {
             timeoutDelay += 1;
         }
         heartbeat = 1 - heartbeat;
+        if (minuteDelay < 60) {
+            minuteDelay += 1;
+        }
         secondDelay = 0;
-    }
-}
-
-void initializeThresholds() {
-    eeprom_busy_wait();
-    offThreshold = eeprom_read_byte(OFF_THRESHOLD_ADDRESS);
-    eeprom_busy_wait();
-    onThreshold = eeprom_read_byte(ON_THRESHOLD_ADDRESS);
-    if (offThreshold == 0xFF || onThreshold == 0xFF) {
-        offThreshold = 40;
-        onThreshold = 43;
     }
 }
 
@@ -439,9 +460,43 @@ void updateTemperature() {
     }
 }
 
+void updateSpike() {
+    if (hasTemperatureFault) {
+        historyLength = 0;
+        return;
+    }
+    if (minuteDelay < 60) {
+        return;
+    }
+    minuteDelay = 0;
+    if (spikeCooldown > 0) {
+        spikeCooldown -= 1;
+        return;
+    }
+    for (uint8_t index = MAX_SPIKE_WIDTH - 1; index > 0; index--) {
+        temperatureHistory[index] = temperatureHistory[index - 1];
+    }
+    temperatureHistory[0] = currentTemperature;
+    if (historyLength < MAX_SPIKE_WIDTH) {
+        historyLength += 1;
+    }
+    if (spikeWidth >= historyLength) {
+        return;
+    }
+    uint8_t refTemperature = temperatureHistory[spikeWidth];
+    // Be careful of unsigned integers.
+    if (currentTemperature > refTemperature
+            && currentTemperature - refTemperature >= spikeHeight) {
+        spikeCooldown = spikeResetTime;
+        historyLength = 0;
+    }
+}
+
 void updateFans() {
     if (hasTemperatureFault) {
         runState = RUN_STATE_OFF;
+    } else if (spikeCooldown > 0) {
+        runState = RUN_STATE_SPIKE;
     } else {
         if (currentTemperature <= offThreshold) {
             runState = RUN_STATE_OFF;
@@ -454,11 +509,14 @@ void updateFans() {
         return;
     }
     fanDelay = 0;
-    if (runState == RUN_STATE_OFF && runningFanAmount > 0) {
-        runningFanAmount -= 1;
-    }
-    if (runState == RUN_STATE_ON && runningFanAmount < FAN_AMOUNT) {
-        runningFanAmount += 1;
+    if (runState == RUN_STATE_OFF) {
+        if (runningFanAmount > 0) {
+            runningFanAmount -= 1;
+        }
+    } else {
+        if (runningFanAmount < FAN_AMOUNT) {
+            runningFanAmount += 1;
+        }
     }
     controlFans(runningFanAmount);
 }
@@ -531,23 +589,29 @@ void displayText(uint8_t posX, uint8_t posY, const uint8_t *text) {
     }
 }
 
-void displayTemperature(uint8_t posX, uint8_t posY, uint8_t temperature) {
+uint8_t displayInt(uint8_t value) {
+    uint8_t text[5];
+    itoa(value, text, 10);
     uint8_t offsetX = 0;
+    for (uint8_t index = 0; index < 5; index++) {
+        int8_t character = text[index];
+        if (character == 0) {
+            break;
+        }
+        sendLcdCharacter(character);
+        offsetX += 1;
+    }
+    return offsetX;
+}
+
+void displayTemperature(uint8_t posX, uint8_t posY, uint8_t temperature) {
     setLcdCursorPos(posX, posY);
+    uint8_t offsetX;
     if (temperature == 0) {
         sendLcdCharacter('?');
-        offsetX += 1;
+        offsetX = 1;
     } else {
-        uint8_t text[5];
-        itoa(temperature, text, 10);
-        for (uint8_t index = 0; index < 5; index++) {
-            int8_t character = text[index];
-            if (character == 0) {
-                break;
-            }
-            sendLcdCharacter(character);
-            offsetX += 1;
-        }
+        offsetX = displayInt(temperature);
     }
     sendLcdCharacter(0xF2); // Degree symbol.
     sendLcdCharacter('C');
@@ -555,6 +619,25 @@ void displayTemperature(uint8_t posX, uint8_t posY, uint8_t temperature) {
     while (offsetX < 5) {
         sendLcdCharacter(' ');
         offsetX += 1;
+    }
+}
+
+void displayTime(uint8_t posX, uint8_t posY, uint8_t time) {
+    setLcdCursorPos(posX, posY);
+    uint8_t offsetX = displayInt(time);
+    sendLcdCharacter('m');
+    offsetX += 1;
+    while (offsetX < 4) {
+        sendLcdCharacter(' ');
+        offsetX += 1;
+    }
+}
+
+void displayTunable(uint8_t tunableType, uint8_t value) {
+    if (tunableType == TUNABLE_TEMP) {
+        displayTemperature(2, 1, value);
+    } else if (tunableType == TUNABLE_TIME) {
+        displayTime(2, 1, value);
     }
 }
 
@@ -567,9 +650,10 @@ void displayRunState() {
     const uint8_t *text = NULL;
     if (runState == RUN_STATE_OFF) {
         text = idleText;
-    }
-    if (runState == RUN_STATE_ON) {
+    } else if (runState == RUN_STATE_ON) {
         text = runningText;
+    } else if (runState == RUN_STATE_SPIKE) {
+        text = spikeText;
     }
     if (text != NULL) {
         displayText(8, 0, text);
@@ -601,24 +685,24 @@ void displayFault() {
 void displayEditCursor() {
     setLcdCursorPos(0, 1);
     // Arrow or space.
-    sendLcdCharacter(isEditingThresh ? 0x7E : ' ');
+    sendLcdCharacter(isEditingTunable ? 0x7E : ' ');
 }
 
 void showScreen(uint8_t screen) {
     currentScreen = screen;
-    isEditingThresh = false;
+    currentTunable = NULL;
+    isEditingTunable = false;
     clearLcd();
     if (currentScreen == SCREEN_MAIN) {
         displayCurrentTemp();
         displayRunState();
         displayHeartbeat();
         displayFault();
-    } else if (currentScreen == SCREEN_OFF_THRESH) {
-        displayText(0, 0, offThresholdText);
-        displayTemperature(2, 1, offThreshold);
-    } else if (currentScreen == SCREEN_ON_THRESH) {
-        displayText(0, 0, onThresholdText);
-        displayTemperature(2, 1, onThreshold);
+    } else {
+        currentTunable = tunableScreens + currentScreen - 1;
+        displayText(0, 0, currentTunable->title);
+        uint8_t value = *(currentTunable->valuePointer);
+        displayTunable(currentTunable->tunableType, value);
     }
 }
 
@@ -646,24 +730,106 @@ void updateScreen() {
     }
 }
 
-void saveThreshold() {
-    if (currentScreen == SCREEN_OFF_THRESH) {
-        offThreshold = editThreshold;
-        if (onThreshold <= offThreshold) {
-            onThreshold = offThreshold + 1;
-        }
-    } else if (currentScreen == SCREEN_ON_THRESH) {
-        onThreshold = editThreshold;
-        if (offThreshold >= onThreshold) {
-            offThreshold = onThreshold - 1;
-        }
+uint8_t readEeprom(uint8_t address) {
+    eeprom_busy_wait();
+    return eeprom_read_byte((uint8_t *)(uint16_t)address);
+}
+
+void writeEeprom(uint8_t address, uint8_t value) {
+    eeprom_busy_wait();
+    eeprom_write_byte((uint8_t *)(uint16_t)address, value);
+}
+
+void saveThresholds() {
+    writeEeprom(ADDRESS_OFF_THRESHOLD, offThreshold);
+    writeEeprom(ADDRESS_ON_THRESHOLD, onThreshold);
+}
+
+void saveOffThreshold() {
+    if (onThreshold <= offThreshold) {
+        onThreshold = offThreshold + 1;
     }
-    eeprom_busy_wait();
-    eeprom_write_byte(OFF_THRESHOLD_ADDRESS, offThreshold);
-    eeprom_busy_wait();
-    eeprom_write_byte(ON_THRESHOLD_ADDRESS, onThreshold);
-    isEditingThresh = false;
-    displayEditCursor();
+    saveThresholds();
+}
+
+void saveOnThreshold() {
+    if (offThreshold >= onThreshold) {
+        offThreshold = onThreshold - 1;
+    }
+    saveThresholds();
+}
+
+void saveSpikeWidth() {
+    writeEeprom(ADDRESS_SPIKE_WIDTH, spikeWidth);
+}
+
+void saveSpikeHeight() {
+    writeEeprom(ADDRESS_SPIKE_HEIGHT, spikeHeight);
+}
+
+void saveSpikeReset() {
+    writeEeprom(ADDRESS_SPIKE_RESET, spikeResetTime);
+}
+
+void initializeTunables() {
+    tunableScreens[0] = (tunableScreen_t){
+        offThresholdText,
+        TUNABLE_TEMP,
+        &offThreshold,
+        10,
+        90,
+        &saveOffThreshold
+    };
+    tunableScreens[1] = (tunableScreen_t){
+        onThresholdText,
+        TUNABLE_TEMP,
+        &onThreshold,
+        10,
+        90,
+        &saveOnThreshold
+    };
+    tunableScreens[2] = (tunableScreen_t){
+        spikeWidthText,
+        TUNABLE_TIME,
+        &spikeWidth,
+        1,
+        MAX_SPIKE_WIDTH,
+        &saveSpikeWidth
+    };
+    tunableScreens[3] = (tunableScreen_t){
+        spikeHeightText,
+        TUNABLE_TEMP,
+        &spikeHeight,
+        10,
+        90,
+        &saveSpikeHeight
+    };
+    tunableScreens[4] = (tunableScreen_t){
+        spikeResetText,
+        TUNABLE_TIME,
+        &spikeResetTime,
+        1,
+        10,
+        &saveSpikeReset
+    };
+    offThreshold = readEeprom(ADDRESS_OFF_THRESHOLD);
+    onThreshold = readEeprom(ADDRESS_ON_THRESHOLD);
+    if (offThreshold == 0xFF || onThreshold == 0xFF) {
+        offThreshold = 40;
+        onThreshold = 43;
+    }
+    spikeWidth = readEeprom(ADDRESS_SPIKE_WIDTH);
+    if (spikeWidth == 0xFF) {
+        spikeWidth = 5;
+    }
+    spikeHeight = readEeprom(ADDRESS_SPIKE_HEIGHT);
+    if (spikeHeight == 0xFF) {
+        spikeHeight = 5;
+    }
+    spikeResetTime = readEeprom(ADDRESS_SPIKE_RESET);
+    if (spikeResetTime == 0xFF) {
+        spikeResetTime = 5;
+    }
 }
 
 void handleButton() {
@@ -673,41 +839,40 @@ void handleButton() {
     uint8_t button = lastPressedButton;
     lastPressedButton = BUTTON_NONE;
     timeoutDelay = 0;
-    if (isEditingThresh) {
+    if (isEditingTunable) {
         if (button == BUTTON_ENTER) {
-            saveThreshold();
+            *(currentTunable->valuePointer) = editValue;
+            (*(currentTunable->save))();
+            isEditingTunable = false;
+            displayEditCursor();
         } else {
-            uint8_t lastThreshold = editThreshold;
+            uint8_t lastValue = editValue;
             if (button == BUTTON_PREV) {
-                if (editThreshold > 10) {
-                    editThreshold -= 1;
+                if (editValue > currentTunable->minValue) {
+                    editValue -= 1;
                 }
             } else if (button == BUTTON_NEXT) {
-                if (editThreshold < 90) {
-                    editThreshold += 1;
+                if (editValue < currentTunable->maxValue) {
+                    editValue += 1;
                 }
             }
-            if (editThreshold != lastThreshold) {
-                displayTemperature(2, 1, editThreshold);
+            if (editValue != lastValue) {
+                displayTunable(currentTunable->tunableType, editValue);
             }
         }
     } else {
         if (button == BUTTON_PREV) {
-            uint8_t nextScreen = (currentScreen > 0) ? currentScreen - 1 : SCREEN_AMOUNT - 1;
-            showScreen(nextScreen);
+            uint8_t prevScreen = (currentScreen > 0) ? currentScreen - 1 : SCREEN_AMOUNT - 1;
+            showScreen(prevScreen);
         } else if (button == BUTTON_NEXT) {
             uint8_t nextScreen = (currentScreen < SCREEN_AMOUNT - 1) ? currentScreen + 1 : 0;
             showScreen(nextScreen);
         } else if (button == BUTTON_ENTER) {
-            if (currentScreen == SCREEN_OFF_THRESH) {
-                editThreshold = offThreshold;
-            } else if (currentScreen == SCREEN_ON_THRESH) {
-                editThreshold = onThreshold;
-            } else {
-                return;
+            if (currentTunable != NULL) {
+                editValue = *(currentTunable->valuePointer);
+                isEditingTunable = true;
+                displayEditCursor();
             }
-            isEditingThresh = true;
-            displayEditCursor();
         }
     }
 }
@@ -717,7 +882,7 @@ int main(void) {
     initializePinModes();
     initializeLcd();
     initializeTimer();
-    initializeThresholds();
+    initializeTunables();
     for (uint8_t index = 0; index < FAN_AMOUNT; index++) {
         stuckCounts[index] = 0;
     }
@@ -725,6 +890,7 @@ int main(void) {
     
     while (true) {
         updateTemperature();
+        updateSpike();
         updateFans();
         updateTachometers();
         updateFault();

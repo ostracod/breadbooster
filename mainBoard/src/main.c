@@ -592,16 +592,16 @@ void displayText(uint8_t posX, uint8_t posY, const uint8_t *text) {
 uint8_t displayInt(uint8_t value) {
     uint8_t text[5];
     itoa(value, text, 10);
-    uint8_t offsetX = 0;
-    for (uint8_t index = 0; index < 5; index++) {
+    uint8_t index = 0;
+    while (index < 5) {
         int8_t character = text[index];
         if (character == 0) {
             break;
         }
         sendLcdCharacter(character);
-        offsetX += 1;
+        index += 1;
     }
-    return offsetX;
+    return index;
 }
 
 void displayTemperature(uint8_t posX, uint8_t posY, uint8_t temperature) {
@@ -815,8 +815,8 @@ void initializeTunables() {
     offThreshold = readEeprom(ADDRESS_OFF_THRESHOLD);
     onThreshold = readEeprom(ADDRESS_ON_THRESHOLD);
     if (offThreshold == 0xFF || onThreshold == 0xFF) {
-        offThreshold = 40;
-        onThreshold = 43;
+        offThreshold = 29;
+        onThreshold = 32;
     }
     spikeWidth = readEeprom(ADDRESS_SPIKE_WIDTH);
     if (spikeWidth == 0xFF) {

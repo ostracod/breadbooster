@@ -800,7 +800,7 @@ void initializeTunables() {
         spikeHeightText,
         TUNABLE_TEMP,
         &spikeHeight,
-        10,
+        1,
         90,
         &saveSpikeHeight
     };

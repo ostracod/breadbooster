@@ -36,6 +36,30 @@ Beyond the PCBs, BreadBooster uses these parts:
 * (x2) 3 pack of PC fans: [B0CD7P3S8Q](https://www.amazon.com/DARKROCK-Computer-Performance-Hydraulic-Warranty/dp/B0CD7P3S8Q)
 * (x1) 12V power supply: QFWB-36-12-US01
 
+## Principles of Operation
+
+BreadBooster has two temperature thresholds for hysteresis of fan control:
+
+* The "on" threshold is the temperature at which the fans turn on.
+* The "off" threshold is the temperature at which the fans turn off.
+
+The default "off" and "on" thresholds are 29 &deg;C and 32 &deg;C respectively. These thresholds can be tuned using the display and buttons. It is recommended to keep these temperatures above the maximum ambient indoor summer temperature, so that the fans don't turn on unnecessarily.
+
+BreadBooster also can detect when temperature is rapidly rising, and turn the fans on faster than the "on" threshold would otherwise allow. This type of temperature rise is called a "spike". BreadBooster has three tunables to determine spike behavior:
+
+* "Spike width" is the window of time to check for a spike.
+* "Spike height" is the minimum temperature increase to register a spike.
+* "Spike reset time" is the amount of time to run the fans after a spike before reverting to normal operation.
+
+The default spike dimensions are 5 &deg;C within 5 minutes, and the default reset time is 5 minutes.
+
+BreadBooster saves all tunable values to internal EEPROM. This ensures that the tunables persist in the event of a power outage.
+
+BreadBooster detects and displays the following types of faults:
+
+* A "temperature fault" occurs when the main board is unable to communicate with the satellite board.
+* A "fan fault" occurs when a fan tachometer stays flat after fan control has remained active for 10 seconds.
+
 ## Microcontroller Pinouts
 
 Main microcontroller pinout:

@@ -32,6 +32,7 @@
 #define MAX_TIMEOUT_DELAY 30
 #define MAX_STUCK_COUNT 5
 #define MAX_SPIKE_WIDTH 10
+#define MAX_HISTORY_LENGTH (MAX_SPIKE_WIDTH + 1)
 
 #define FAULT_NONE 0
 #define FAULT_TEMPERATURE 1
@@ -182,7 +183,7 @@ uint8_t runningFanAmount = 0;
 uint8_t stuckCounts[FAN_AMOUNT];
 uint8_t stuckFan = 0;
 uint8_t currentFault = FAULT_NONE;
-uint8_t temperatureHistory[MAX_SPIKE_WIDTH];
+uint8_t temperatureHistory[MAX_HISTORY_LENGTH];
 uint8_t historyLength = 0;
 uint8_t spikeCooldown = 0;
 
@@ -465,22 +466,22 @@ void updateSpike() {
         historyLength = 0;
         return;
     }
-    if (minuteDelay < 60) {
-        return;
+    uint8_t isInCooldown = (spikeCooldown > 0);
+    if (minuteDelay >= 60) {
+        if (isInCooldown) {
+            spikeCooldown -= 1;
+        } else {
+            for (uint8_t index = MAX_HISTORY_LENGTH - 1; index > 0; index--) {
+                temperatureHistory[index] = temperatureHistory[index - 1];
+            }
+            temperatureHistory[0] = currentTemperature;
+            if (historyLength < MAX_HISTORY_LENGTH) {
+                historyLength += 1;
+            }
+        }
+        minuteDelay = 0;
     }
-    minuteDelay = 0;
-    if (spikeCooldown > 0) {
-        spikeCooldown -= 1;
-        return;
-    }
-    for (uint8_t index = MAX_SPIKE_WIDTH - 1; index > 0; index--) {
-        temperatureHistory[index] = temperatureHistory[index - 1];
-    }
-    temperatureHistory[0] = currentTemperature;
-    if (historyLength < MAX_SPIKE_WIDTH) {
-        historyLength += 1;
-    }
-    if (spikeWidth >= historyLength) {
+    if (isInCooldown || spikeWidth >= historyLength) {
         return;
     }
     uint8_t refTemperature = temperatureHistory[spikeWidth];

@@ -490,6 +490,7 @@ void updateSpike() {
             && currentTemperature - refTemperature >= spikeHeight) {
         spikeCooldown = spikeResetTime;
         historyLength = 0;
+        minuteDelay = 0;
     }
 }
 
